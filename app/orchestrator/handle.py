@@ -5,16 +5,34 @@ import logging
 
 from app.demo.briefing import answer as briefing_answer
 from app.llm.guard import guard_reply, numbers_in
+from app.llm.prompt import load_system_prompt
 from app.modules import forecast, growth, insights, intake
 from app.modules.inventory import answer_stock
+from app.modules.onboarding import (
+    business_name_from,
+    menu_from,
+    menu_to_save,
+    name_to_save,
+    save_business_name,
+    save_menu,
+    shop_is_demo,
+)
 from app.modules.parsing import (
     classify_question,
     extract_heuristic,
     is_delete_request,
     is_no,
+    is_summary_line,
     is_yes,
     normalize_extraction,
     text_numbers,
+)
+from app.modules.sheet import (
+    SheetDraft,
+    csv_help_text,
+    is_csv_question,
+    looks_like_csv,
+    parse_sheet_text,
 )
 
 logger = logging.getLogger("smartstock.orchestrator")
@@ -24,21 +42,12 @@ HELP = (
     "• sold 12 chicken kota 8 russian\n"
     "• bought 20 bread R180\n"
     "• threw away 5 chips burnt\n"
-    "You can also ask: stock, what to prep, profit this month, or a promo draft."
+    "You can also ask: stock, what to prep, profit this month, or a promo draft.\n"
+    "Set your shop name: Bra Kota Nate is my business name.\n"
+    "Or paste a CSV (or attach the file). I only save it after you reply YES."
 )
 
-SYSTEM = (
-    "You are SmartStock, the bookkeeper for one township kota shop in South Africa. "
-    "Money is rand. The clock is Africa/Johannesburg. "
-    "Call tools to read this shop's database or to propose records. "
-    "Never invent quantities, prices, or stock. "
-    "To save a sale, purchase, expense, waste, invoice, or stock count, call propose_records. "
-    "The server asks the owner to reply YES. Do not say it is already saved. "
-    "confirm_latest only works when the owner just said yes. The server blocks it otherwise. "
-    "For prep, profit, stock, shopping, promos, or funding, call the matching tool and stop. "
-    "The server sends that tool's reply. "
-    "If the message is unclear, call propose_records with needs_clarification true and a short question."
-)
+SYSTEM = load_system_prompt()
 
 TOOLS = [
     {
@@ -164,6 +173,41 @@ TOOLS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_shop_name",
+            "description": "Save this shop's business name when the owner clearly states it. The server checks the words.",
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_menu",
+            "description": "Save the products the owner says they sell. The server checks each name is in the message.",
+            "parameters": {
+                "type": "object",
+                "properties": {"products": {"type": "array", "items": {"type": "string"}}},
+                "required": ["products"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_csv_import",
+            "description": (
+                "Read a CSV sheet in the owner's message and ask them to reply YES before saving. "
+                "Use this when they pasted rows or asked to import a sheet."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 
@@ -187,6 +231,10 @@ async def build_reply(ctx) -> str:
         peeked = extract_heuristic(text, ctx.today, products, ingredients)
         if not peeked.is_record:
             return await _with_conn(ctx, lambda conn: intake.cancel(conn, ctx))
+    if text:
+        direct = await _owner_setup(ctx, text)
+        if direct is not None:
+            return direct
     if ctx.llm.configured:
         try:
             reply = await _llm_turn(ctx)
@@ -216,6 +264,17 @@ async def _consent(ctx, text: str) -> str:
             "Say DELETE MY DATA if you want them removed."
         )
         if previous and not is_yes(previous) and not is_no(previous):
+            named = business_name_from(previous)
+            if named:
+                saved = await _with_conn(ctx, lambda conn: save_business_name(conn, ctx.shop_id, named))
+                return thanks + "\n" + saved
+            menu = menu_from(previous)
+            if menu:
+                saved = await _with_conn(ctx, lambda conn: save_menu(conn, ctx.shop_id, menu))
+                return thanks + "\n" + saved
+            if looks_like_csv(previous):
+                draft = await _propose_csv(ctx, previous)
+                return thanks + "\n\n" + draft
             outcome = extract_heuristic(previous, ctx.today, products, ingredients)
             if outcome.is_record:
                 async with ctx.pool.connection() as conn:
@@ -265,6 +324,42 @@ async def _propose_delete(ctx) -> str:
             return payload
 
     return await _with_conn(ctx, lambda conn: intake.propose(conn, ctx, _DeleteOutcome()))
+
+
+async def _owner_setup(ctx, text: str) -> str | None:
+    """Name, menu, and CSV are handled here so they work with or without the model."""
+    name = business_name_from(text)
+    if name:
+        return await _with_conn(ctx, lambda conn: save_business_name(conn, ctx.shop_id, name))
+    menu = menu_from(text)
+    if menu:
+        return await _with_conn(ctx, lambda conn: save_menu(conn, ctx.shop_id, menu))
+    if is_csv_question(text):
+        return csv_help_text()
+    if looks_like_csv(text):
+        return await _propose_csv(ctx, text)
+    if is_summary_line(text):
+        products, ingredients = _names(ctx)
+        outcome = extract_heuristic(text, ctx.today, products, ingredients)
+        if outcome.is_record:
+            return await _with_conn(ctx, lambda conn: intake.propose(conn, ctx, outcome))
+    return None
+
+
+async def _propose_csv(ctx, text: str) -> str:
+    parsed = parse_sheet_text(text)
+    if parsed is None or parsed.error:
+        return parsed.error if parsed and parsed.error else (
+            "I could not read that as a sheet. Paste rows starting with the date, "
+            "or a header line that starts with Date."
+        )
+    if await _with_conn(ctx, lambda conn: shop_is_demo(conn, ctx.shop_id)):
+        return (
+            "This is a demo shop, so I won't load a sheet onto it. "
+            "Send the CSV from your own WhatsApp and I will save it on your shop after you reply YES."
+        )
+    draft = SheetDraft(ctx.shop_id, parsed)
+    return await _with_conn(ctx, lambda conn: intake.propose(conn, ctx, draft))
 
 
 async def _rules(ctx, text: str) -> str:
@@ -350,6 +445,30 @@ async def _dispatch(ctx, name: str, arguments: dict) -> dict:
         if not outcome.is_record:
             return {"final": False, "error": "No shop record was found in the owner's message."}
         reply = await _with_conn(ctx, lambda conn: intake.propose(conn, ctx, outcome))
+        return {"final": True, "reply": reply}
+    if name == "set_shop_name":
+        chosen = name_to_save(ctx.text or "", (arguments or {}).get("name"))
+        if not chosen:
+            return {
+                "final": True,
+                "reply": "Tell me the shop name like: Bra Kota Nate is my business name.",
+            }
+        reply = await _with_conn(ctx, lambda conn: save_business_name(conn, ctx.shop_id, chosen))
+        return {"final": True, "reply": reply}
+    if name == "set_menu":
+        chosen = menu_to_save(ctx.text or "", (arguments or {}).get("products"))
+        if not chosen:
+            return {
+                "final": True,
+                "reply": "Tell me the products like: my products are classic kota, russian and cheese, full house.",
+            }
+        reply = await _with_conn(ctx, lambda conn: save_menu(conn, ctx.shop_id, chosen))
+        return {"final": True, "reply": reply}
+    if name == "propose_csv_import":
+        if looks_like_csv(ctx.text or ""):
+            reply = await _propose_csv(ctx, ctx.text or "")
+        else:
+            reply = csv_help_text()
         return {"final": True, "reply": reply}
     if name == "confirm_latest":
         if not is_yes(ctx.text or ""):

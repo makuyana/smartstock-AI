@@ -104,6 +104,44 @@ def test_parse_whatsapp_image_and_voice():
     assert audio_event.text is None
 
 
+def test_parse_whatsapp_csv_document():
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "contacts": [{"wa_id": "27820001111", "profile": {"name": "Nate"}}],
+                            "messages": [
+                                {
+                                    "from": "27820001111",
+                                    "id": "wamid.csv",
+                                    "timestamp": "1763000003",
+                                    "type": "document",
+                                    "document": {
+                                        "id": "doc-1",
+                                        "mime_type": "text/csv",
+                                        "filename": "kota_shop_feb2026.csv",
+                                        "caption": "my sheet",
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        ],
+    }
+    event = parse_webhook(payload)[0]
+    assert event.type == "document"
+    assert event.media_id == "doc-1"
+    assert event.filename == "kota_shop_feb2026.csv"
+    assert event.mime_type == "text/csv"
+    assert event.caption == "my sheet"
+    assert event.sender_name == "Nate"
+
+
 def test_whatsapp_status_is_ignored():
     payload = {
         "object": "whatsapp_business_account",

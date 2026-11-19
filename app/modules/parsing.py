@@ -19,6 +19,7 @@ ALLOWED_KINDS = {
     "purchase",
     "expense",
     "waste",
+    "usage",
     "invoice",
     "stock_count",
     "set_price",
@@ -373,6 +374,40 @@ def is_delete_request(text: str) -> bool:
     return bool(re.search(r"\bdelete my (data|records|shop)\b", text.lower()))
 
 
+def canonical_product(name: str) -> str | None:
+    """Map a kota menu phrase onto the sheet's product name. None if it is not one."""
+    normalized = norm_name(name)
+    normalized = re.sub(r"\bkotas\b", "kota", normalized)
+    if normalized in {"classic kota", "classic"}:
+        return "classic kota"
+    if normalized in {"russian and cheese", "russian cheese", "russian cheese kota"}:
+        return "russian cheese kota"
+    if normalized in {"full house", "full house kota"}:
+        return "full house kota"
+    return None
+
+
+def canonical_ingredient(name: str) -> tuple[str, str] | None:
+    """Map a kota sheet ingredient phrase to (name, unit). None if it is not one."""
+    normalized = norm_name(name)
+    tokens = set(normalized.split())
+    if "polony" in tokens:
+        return "polony", "kg"
+    if tokens & {"bread", "loaf", "loaves"}:
+        return "bread loaf", "loaf"
+    if normalized in {"russian", "russians", "russian sausage"}:
+        return "russian sausage", "piece"
+    if "cheese" in tokens and "slice" in tokens:
+        return "cheese slice", "slice"
+    if tokens & {"potato", "potatoes"}:
+        return "potato", "kg"
+    if "atchar" in tokens:
+        return "atchar", "litre"
+    if "oil" in tokens:
+        return "cooking oil", "litre"
+    return None
+
+
 def match_item(spoken: str, names: list[str]) -> NameMatch:
     target = norm_name(spoken)
     if not target or not names:
@@ -428,17 +463,23 @@ def _clean_fragment(fragment: str) -> str:
 
 def _pairs(fragment: str) -> list[tuple[Decimal, str]]:
     pattern = re.compile(
-        r"(\d+(?:[.,]\d+)?)\s+([a-z][a-z' ]*?)(?=\s+\d+(?:[.,]\d+)?\s+[a-z]|$)",
+        r"(\d+(?:[.,]\d+)?)\s+([a-z][a-z'& ]*?)(?=\s+\d+(?:[.,]\d+)?\s+[a-z]|$)",
         re.I,
     )
+    cleaned = _clean_fragment(fragment)
+    cleaned = re.sub(r"\([^)]*\btotal\b[^)]*\)", " ", cleaned, flags=re.I)
     found = []
-    for qty_raw, name in pattern.findall(_clean_fragment(fragment)):
-        name = re.sub(r"\s+", " ", name).strip(" .,-")
-        name = re.sub(r"\b(and|n)$", "", name).strip()
-        name = re.sub(r"^(of|the|a|an)\s+", "", name)
-        if not name:
+    for chunk in cleaned.split(","):
+        chunk = re.sub(r"\s+", " ", chunk).strip(" .")
+        if not chunk:
             continue
-        found.append((Decimal(qty_raw.replace(",", ".")), name))
+        for qty_raw, name in pattern.findall(chunk):
+            name = re.sub(r"\s+", " ", name).strip(" .,-&")
+            name = re.sub(r"\b(and|n)$", "", name).strip()
+            name = re.sub(r"^(of|the|a|an)\s+", "", name)
+            if not name:
+                continue
+            found.append((Decimal(qty_raw.replace(",", ".")), name))
     return found
 
 
@@ -677,8 +718,148 @@ def _events_from_clause(clause: str, today: date) -> tuple[list[dict], str | Non
     return [], None
 
 
+def is_summary_line(text: str) -> bool:
+    return bool(re.search(r"\bsold\s*:", text or "", re.I))
+
+
+def _event_date(event: dict, text: str, normalized: str) -> date | None:
+    raw = event.get("record_date")
+    if not raw:
+        return None
+    raw_day = str(raw)[:10]
+    if raw_day not in text and raw_day not in normalized:
+        return None
+    try:
+        return date.fromisoformat(raw_day)
+    except ValueError:
+        return None
+
+
+def _canonical_for(kind: str, spoken: str | None) -> tuple[str | None, str | None]:
+    if not spoken:
+        return None, None
+    if kind == "sale":
+        return canonical_product(spoken), None
+    if kind in {"usage", "waste"}:
+        mapped = canonical_ingredient(spoken)
+        if mapped:
+            return mapped
+    return None, None
+
+
+def _summary_events(text: str) -> list[dict] | None:
+    """A read-back line: Date: ... | Sold: 44 Classic Kotas, ... | Used: ..."""
+    if not is_summary_line(text):
+        return None
+    date_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
+    record_date = date_match.group(1) if date_match else None
+    sold_match = re.search(
+        r"\bsold\s*:\s*(.+?)(?=(?:\|\s*)?\bused\s*:|$)",
+        text,
+        re.I | re.S,
+    )
+    if not sold_match:
+        return None
+    sold_blob = re.sub(r"\([^)]*\btotal\b[^)]*\)", " ", sold_match.group(1), flags=re.I)
+    events = []
+    for qty, name in _comma_items(sold_blob):
+        event = {
+            "kind": "sale",
+            "item_name": name,
+            "quantity": format(qty, "f"),
+            "confidence": "high",
+        }
+        if record_date:
+            event["record_date"] = record_date
+        events.append(event)
+    if not events:
+        return None
+    used_match = re.search(r"\bused\s*:\s*(.+)$", text, re.I | re.S)
+    if used_match:
+        events.extend(_used_events(used_match.group(1), record_date))
+    return events
+
+
+def _comma_items(blob: str) -> list[tuple[Decimal, str]]:
+    found = []
+    pattern = re.compile(
+        r"(\d+(?:[.,]\d+)?)\s+([a-z][a-z'& ]*?)(?=\s+\d+(?:[.,]\d+)?\s+[a-z]|$)",
+        re.I,
+    )
+    for part in blob.split(","):
+        part = re.sub(r"\([^)]*\)", " ", part)
+        part = re.sub(r"\s+", " ", part).strip(" .|")
+        if not part:
+            continue
+        for qty_raw, name in pattern.findall(part):
+            name = re.sub(r"\s+", " ", name).strip(" .,-&")
+            name = re.sub(r"\b(and|n)$", "", name).strip()
+            if name:
+                found.append((Decimal(qty_raw.replace(",", ".")), name))
+    return found
+
+
+def _used_events(blob: str, record_date: str | None) -> list[dict]:
+    events = []
+    for part in blob.split(","):
+        spoilage = None
+        paren = re.search(r"\(([^)]*)\)", part)
+        body = part
+        if paren:
+            spoil = re.search(r"(\d+(?:[.,]\d+)?)\s*spoil", paren.group(1), re.I)
+            if spoil:
+                spoilage = Decimal(spoil.group(1).replace(",", "."))
+            body = part[: paren.start()] + " " + part[paren.end() :]
+        body = re.sub(r"\s+", " ", body).strip(" .|")
+        match = re.match(
+            r"^(\d+(?:[.,]\d+)?)(?:\s*(kg|g|loaves|loaf|pcs|pieces|litres|liters))?\s*([a-z][a-z'& ]+)$",
+            body,
+            re.I,
+        )
+        if not match:
+            continue
+        qty = Decimal(match.group(1).replace(",", "."))
+        unit_word = (match.group(2) or "").lower()
+        name = re.sub(r"\s+", " ", match.group(3)).strip()
+        if unit_word in {"loaves", "loaf"}:
+            spoken = f"{unit_word} {name}".strip()
+        else:
+            spoken = name
+        if not spoken:
+            continue
+        event = {
+            "kind": "usage",
+            "item_name": spoken,
+            "quantity": format(qty, "f"),
+            "confidence": "high",
+        }
+        if record_date:
+            event["record_date"] = record_date
+        events.append(event)
+        if spoilage is not None and spoilage > 0:
+            waste = {
+                "kind": "waste",
+                "item_name": spoken,
+                "quantity": format(spoilage, "f"),
+                "reason": "spoiled",
+                "confidence": "high",
+            }
+            if record_date:
+                waste["record_date"] = record_date
+            events.append(waste)
+    return events
+
+
 def heuristic_payload(text: str, today: date) -> dict:
     normalized = normalize_words(text)
+    summary = _summary_events(normalized)
+    if summary:
+        return {
+            "events": summary[:20],
+            "needs_clarification": False,
+            "clarification_question": None,
+            "_saw_verb": True,
+        }
     events: list[dict] = []
     question = None
     saw_verb = False
@@ -729,7 +910,7 @@ def _category_allowed(category: str | None, text: str) -> str | None:
 def _match_for_kind(kind: str, spoken: str, products: list[str], ingredients: list[str]) -> tuple[NameMatch, str]:
     if kind in {"sale", "set_price", "set_target"}:
         return match_item(spoken, products), "product"
-    if kind in {"purchase", "stock_count"}:
+    if kind in {"purchase", "stock_count", "usage"}:
         return match_item(spoken, ingredients), "ingredient"
     if kind == "waste":
         ingredient_match = match_item(spoken, ingredients)
@@ -806,6 +987,7 @@ def normalize_extraction(
         spoken_category = event.get("spoken_category") or event.get("item_name")
         if kind == "expense" and category is None and spoken:
             category = _category_allowed(spoken, normalized_text)
+        explicit_day = _event_date(event, text, normalized_text)
         record = DraftRecord(
             kind=kind,
             spoken_name=spoken,
@@ -820,11 +1002,11 @@ def normalize_extraction(
             reason=reason,
             category=category,
             spoken_category=str(spoken_category) if spoken_category else None,
-            record_date=record_date,
+            record_date=explicit_day or record_date,
             sale_hour=hour,
             action=kind if kind in {"set_price", "set_target"} else None,
         )
-        if assumed_today:
+        if assumed_today and explicit_day is None:
             record.notes.append("assumed today")
         if event.get("period_type") in {"day", "week", "month"}:
             record.period_type = event["period_type"]
@@ -840,7 +1022,7 @@ def normalize_extraction(
             record.block_reason = (
                 f"Is {fmt_money(unclear)} the price each, or the total? I have not saved this."
             )
-        if spoken and kind in {"sale", "purchase", "waste", "stock_count", "set_price", "set_target"}:
+        if spoken and kind in {"sale", "purchase", "waste", "stock_count", "set_price", "set_target", "usage"}:
             matched, item_kind = _match_for_kind(kind, spoken, products, ingredient_names)
             record.item_kind = item_kind
             if matched.confidence == "ambiguous":
@@ -855,6 +1037,12 @@ def normalize_extraction(
             else:
                 record.create_item = True
                 record.item_name = spoken
+            canon_name, canon_unit = _canonical_for(kind, spoken)
+            if record.create_item and not record.blocked and canon_name:
+                record.item_name = canon_name
+            if record.unit is None and canon_unit:
+                record.unit = canon_unit
+                record.unit_assumed = False
         if kind == "sale":
             record.item_kind = record.item_kind or "product"
             record.unit = record.unit or "each"
@@ -890,6 +1078,14 @@ def normalize_extraction(
             if record.quantity is None or not record.item_name:
                 record.blocked = True
                 record.block_reason = record.block_reason or "What was thrown away, and how much?"
+        elif kind == "usage":
+            record.item_kind = record.item_kind or "ingredient"
+            if record.unit is None:
+                record.unit = "each"
+                record.unit_assumed = True
+            if record.quantity is None or not record.item_name:
+                record.blocked = True
+                record.block_reason = record.block_reason or "What was used, and how much?"
         elif kind == "expense":
             if record.amount is None or record.category is None:
                 record.blocked = True
@@ -963,6 +1159,8 @@ def _complete(record: DraftRecord) -> bool:
         )
     if record.kind == "waste":
         return record.quantity is not None and bool(record.item_name) and bool(record.unit)
+    if record.kind == "usage":
+        return record.quantity is not None and bool(record.item_name) and bool(record.unit)
     if record.kind == "expense":
         return record.amount is not None and bool(record.category)
     if record.kind == "stock_count":
@@ -992,6 +1190,15 @@ def _when(record: DraftRecord) -> str:
     return f" on {record.record_date.isoformat()}"
 
 
+def _qty_unit(record: DraftRecord) -> str:
+    unit = record.unit or ""
+    if unit in {"", "each", "piece"}:
+        return ""
+    if unit in (record.item_name or ""):
+        return ""
+    return f" {unit}"
+
+
 def _line(record: DraftRecord) -> str:
     when = _when(record)
     if record.kind == "sale":
@@ -1014,8 +1221,9 @@ def _line(record: DraftRecord) -> str:
         return f"Bought {fmt_qty(record.quantity)} {unit_prefix}{record.item_name}{cost}{when}.{assumed}"
     if record.kind == "waste":
         reason = f" ({record.reason})" if record.reason else ""
-        unit_bit = f" {record.unit}" if record.unit else ""
-        return f"Threw away {fmt_qty(record.quantity)}{unit_bit} {record.item_name}{reason}{when}"
+        return f"Threw away {fmt_qty(record.quantity)}{_qty_unit(record)} {record.item_name}{reason}{when}"
+    if record.kind == "usage":
+        return f"Used {fmt_qty(record.quantity)}{_qty_unit(record)} {record.item_name}{when}"
     if record.kind == "expense":
         spoken = record.spoken_category or CATEGORY_LABEL.get(record.category or "", "expense")
         filed = CATEGORY_LABEL.get(record.category or "", record.category or "")

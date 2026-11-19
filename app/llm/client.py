@@ -1,4 +1,4 @@
-"""LLM calls. The provider is whatever OpenAI-compatible base URL is configured."""
+"""LLM calls. Any OpenAI-compatible base URL works, including xAI (https://api.x.ai/v1)."""
 
 import json
 from dataclasses import dataclass, field
@@ -70,4 +70,22 @@ class LLMClient:
                     arguments=arguments if isinstance(arguments, dict) else {},
                 )
             )
-        return LLMResponse(content=message.get("content"), tool_calls=calls)
+        return LLMResponse(content=_message_text(message.get("content")), tool_calls=calls)
+
+
+def _message_text(content) -> str | None:
+    """xAI and OpenAI both return a string. Some replies use a list of text parts."""
+    if content is None:
+        return None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and part.get("text"):
+                parts.append(str(part["text"]))
+        text = "\n".join(part for part in parts if part).strip()
+        return text or None
+    return str(content)

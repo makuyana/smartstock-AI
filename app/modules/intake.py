@@ -56,6 +56,22 @@ async def confirm(conn, ctx) -> str:
         )
         ctx.delete_after_send = True
         return "I will delete this shop's records now. This cannot be undone."
+    if payload.get("action") == "import_sheet":
+        from app.modules.sheet import apply_sheet
+
+        if not payload.get("confirm_allowed"):
+            return pending["read_back"] or "I still need a clearer sheet before I can save that."
+        result = await apply_sheet(conn, ctx, payload)
+        await execute(
+            conn,
+            """
+            UPDATE pending_confirmations
+            SET status = %s, resolved_at = now()
+            WHERE id = %s AND shop_id = %s
+            """,
+            ("confirmed" if result.saved else "cancelled", pending["id"], ctx.shop_id),
+        )
+        return result.message
     if not payload.get("confirm_allowed"):
         return pending["read_back"] or "I still need a clearer answer before I can save that."
     notes = []
