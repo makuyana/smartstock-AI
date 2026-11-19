@@ -12,6 +12,7 @@ from app.config import Settings, normalize_database_url
 from app.db import apply_migrations_retry, open_pool
 from app.llm.client import LLMClient
 from app.demo.routes import router as demo_router
+from app.legal.routes import router as legal_router
 from app.webhook.routes import register
 
 
@@ -55,6 +56,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="SmartStock AI", lifespan=lifespan)
     register(app)
     app.include_router(demo_router)
+    app.include_router(legal_router)
     return app
 
 
