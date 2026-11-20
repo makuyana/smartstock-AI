@@ -17,6 +17,7 @@ class InboundEvent:
     media_url: str | None = None
     mime_type: str | None = None
     caption: str | None = None
+    filename: str | None = None
     raw: dict = field(default_factory=dict)
 
 
@@ -81,6 +82,7 @@ def _whatsapp_message(message: dict, names: dict) -> InboundEvent | None:
     caption = None
     media_id = None
     mime = None
+    filename = None
     event_type = "other"
     if kind == "text":
         event_type = "text"
@@ -105,11 +107,12 @@ def _whatsapp_message(message: dict, names: dict) -> InboundEvent | None:
         reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
         text = reply.get("title")
     elif kind == "document":
-        event_type = "image"
+        event_type = "document"
         document = message.get("document") or {}
         media_id = document.get("id")
         mime = document.get("mime_type")
         caption = document.get("caption")
+        filename = document.get("filename")
     return InboundEvent(
         channel="whatsapp",
         external_id=str(external_id),
@@ -121,6 +124,7 @@ def _whatsapp_message(message: dict, names: dict) -> InboundEvent | None:
         media_id=media_id,
         mime_type=mime,
         caption=caption,
+        filename=filename,
         raw=message,
     )
 

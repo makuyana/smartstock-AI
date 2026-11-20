@@ -3,7 +3,7 @@
 from datetime import date
 from decimal import Decimal
 
-from app.money import D, q2, q3
+from app.money import D, fmt_qty, q2, q3
 from app.modules.inventory import apply_deduction, apply_receipt
 from app.modules.invoice import check_vat, price_changed
 from app.store import execute, fetchall, fetchone
@@ -81,6 +81,8 @@ async def write_record(conn, ctx, record: dict) -> str:
         return await _expense(conn, shop_id, message_id, record, ctx.today)
     if kind == "waste":
         return await _waste(conn, shop_id, message_id, record, ctx.today)
+    if kind == "usage":
+        return await _usage(conn, shop_id, record, ctx.today)
     if kind == "stock_count":
         return await _count(conn, shop_id, message_id, record, ctx.today)
     if kind == "invoice":
@@ -193,6 +195,30 @@ async def _purchase(conn, shop_id, message_id, record, today) -> str:
         row["id"],
     )
     return note
+
+
+async def _usage(conn, shop_id, record, today) -> str:
+    ingredient = await _ingredient(conn, shop_id, record["item_name"], record.get("unit") or "each")
+    qty = q3(_dec(record["quantity"]))
+    unit = record.get("unit") or ingredient["unit"] or "each"
+    await execute(
+        conn,
+        """
+        INSERT INTO usage_entries
+            (shop_id, usage_date, ingredient_id, quantity, unit, unit_cost)
+        VALUES (%s, %s, %s, %s, %s, NULL)
+        ON CONFLICT (shop_id, usage_date, ingredient_id)
+        DO UPDATE SET quantity = EXCLUDED.quantity, unit = EXCLUDED.unit
+        """,
+        (shop_id, _day(record.get("record_date"), today), ingredient["id"], qty, unit),
+    )
+    unit_bit = ""
+    if unit and unit not in {"each", "piece"} and unit not in (record.get("item_name") or ""):
+        unit_bit = unit + " "
+    return (
+        f"Recorded {fmt_qty(qty)} {unit_bit}{record['item_name']} used. "
+        "I didn't change the stock count."
+    )
 
 
 async def _expense(conn, shop_id, message_id, record, today) -> str:

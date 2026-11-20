@@ -34,9 +34,9 @@ services:
       - key: LLM_API_KEY
         sync: false
       - key: LLM_BASE_URL
-        value: https://api.openai.com/v1
+        value: https://api.x.ai/v1
       - key: LLM_MODEL
-        value: gpt-4o-mini
+        value: grok-4
       - key: SCHEDULER_ENABLED
         value: "true"
       - key: SEED_DEMO

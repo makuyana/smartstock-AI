@@ -62,6 +62,11 @@ Type them into the box with the same name.
 Leave **LLM_API_KEY** empty if you do not have one yet.
 The example messages above still work.
 
+To use Grok, put your xAI key in **LLM_API_KEY**.
+Leave **LLM_BASE_URL** as `https://api.x.ai/v1`.
+Leave **LLM_MODEL** as `grok-4`, or type another Grok model name if you were given one.
+Do not paste the key into the code or into a chat.
+
 | Box on Render | Where to copy it |
 | --- | --- |
 | META_APP_SECRET | Meta → your app → **App settings** → **Basic** → **App secret** → Show |
@@ -70,9 +75,9 @@ The example messages above still work.
 | WHATSAPP_PHONE_NUMBER_ID | Meta → **WhatsApp** → **API setup** → **Phone number ID** |
 | INSTAGRAM_TOKEN | Meta → **Instagram** → token for the shop's Instagram account |
 | INSTAGRAM_ACCOUNT_ID | Meta → **Instagram** → the Instagram account id |
-| LLM_API_KEY | Optional. An OpenAI key, or another OpenAI-style key. Blank is ok. |
-| LLM_BASE_URL | Leave `https://api.openai.com/v1` unless your key is from another company. |
-| LLM_MODEL | Leave `gpt-4o-mini` unless you were told another model name. |
+| LLM_API_KEY | Optional. Your xAI key for Grok. Blank is ok. The shop rules still work. Do not put the key in the code. On Render this box stays secret (`sync: false`). |
+| LLM_BASE_URL | `https://api.x.ai/v1` for Grok. That address speaks the same chat API as OpenAI. |
+| LLM_MODEL | A Grok model, such as `grok-4`. |
 | DATABASE_URL | Leave this. Render fills it in. |
 
 Do not put these passwords in a chat or in the code.
@@ -176,6 +181,10 @@ The database stops a second send of the same message.
 4. The helper reads it back.
 5. Reply YES.
 6. It is saved.
+
+You can name the shop: `Bra Kota Nate is my business name`.
+You can set the menu: `my products are classic kota, russian and cheese, full house`.
+You can paste a CSV, or attach the file. The helper reads the totals back. Reply YES to save it.
 
 Ask `profit this month` or `what should I prep` when you want a report.
 If a number is missing, the helper says it is missing.

@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     instagram_account_id: str = ""
     database_url: str = ""
     llm_api_key: str = ""
-    llm_base_url: str = "https://api.openai.com/v1"
-    llm_model: str = "gpt-4o-mini"
+    llm_base_url: str = "https://api.x.ai/v1"
+    llm_model: str = "grok-4"
 
     graph_api_version: str = "v21.0"
     graph_api_base_url: str = "https://graph.facebook.com"

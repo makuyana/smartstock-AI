@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from app.channels.meta import provider_message_id
 from app.channels.window import TEMPLATE_NAMES, outbound_mode
+from app.modules.sheet import decode_sheet, document_is_csv
 from app.orchestrator.handle import build_reply
 from app.store import claim_event, fetchone, insert_message, load_catalog
 from app.timeutil import jhb_now
@@ -21,6 +22,9 @@ MIME_EXT = {
     "audio/ogg": ".ogg",
     "audio/mpeg": ".mp3",
     "application/pdf": ".pdf",
+    "text/csv": ".csv",
+    "text/plain": ".txt",
+    "application/vnd.ms-excel": ".csv",
 }
 
 
@@ -56,7 +60,7 @@ async def process_one(event, app) -> None:
                 external_id=event.external_id,
             )
             products, ingredients = await load_catalog(conn, user["shop_id"])
-    await _store_media(app, event, user["shop_id"], message_id)
+    media = await _store_media(app, event, user["shop_id"], message_id)
     now = jhb_now()
     ctx = SimpleNamespace(
         pool=pool,
@@ -76,7 +80,7 @@ async def process_one(event, app) -> None:
         delete_after_send=False,
     )
     try:
-        reply = await _reply_text(event, ctx)
+        reply = await _reply_text(event, ctx, media)
     except Exception:
         logger.exception("reply failed shop=%s", user["shop_id"])
         reply = "Something went wrong on my side. Please send that again."
@@ -176,9 +180,21 @@ async def _resolve_user(conn, event) -> dict:
     )
 
 
-async def _reply_text(event, ctx) -> str:
+async def _reply_text(event, ctx, media: bytes | None = None) -> str:
     caption = (event.caption or "").strip()
     text = (event.text or "").strip()
+    if event.type == "document":
+        if media and document_is_csv(event.filename, event.mime_type, media):
+            ctx.text = decode_sheet(media)
+            return await build_reply(ctx)
+        if caption or text:
+            ctx.text = caption or text
+            follow = await build_reply(ctx)
+            return "I got your file.\n" + follow
+        return (
+            "I got your file. I can read a CSV of your sales. "
+            "Attach a .csv, or paste the rows here."
+        )
     if event.type == "audio" and not text and not caption:
         return (
             "I got your voice note and saved it. I can't listen yet. "
@@ -216,7 +232,7 @@ async def _send(app, event, reply: str, now) -> tuple[dict, str | None]:
         return {"error": str(exc)[:300]}, None
 
 
-async def _store_media(app, event, shop_id: str, message_id) -> None:
+async def _store_media(app, event, shop_id: str, message_id) -> bytes | None:
     content = None
     mime = event.mime_type or "application/octet-stream"
     try:
@@ -233,9 +249,9 @@ async def _store_media(app, event, shop_id: str, message_id) -> None:
         logger.exception("media store failed")
         return
     if not content:
-        return
+        return None
     if len(content) > 8_000_000:
-        return
+        return None
     ext = MIME_EXT.get(mime.split(";")[0].strip().lower(), ".bin")
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", event.external_id)[:80]
     folder = Path(app.state.settings.media_dir) / shop_id
@@ -248,6 +264,7 @@ async def _store_media(app, event, shop_id: str, message_id) -> None:
             "UPDATE messages SET media_url = %s WHERE id = %s AND shop_id = %s",
             (str(path), message_id, shop_id),
         )
+    return content
 
 
 def _body(event) -> str:
@@ -259,6 +276,8 @@ def _body(event) -> str:
         return "[image]"
     if event.type == "audio":
         return "[voice note]"
+    if event.type == "document":
+        return f"[file] {event.filename or 'document'}"[:8000]
     return "[message]"
 
 

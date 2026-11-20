@@ -164,6 +164,46 @@ def test_mixed_language_with_mocked_llm():
     assert outcome.records[0].quantity == Decimal("12")
 
 
+def test_comma_separated_sale_still_matches_the_menu():
+    outcome = extract_heuristic("sold 12 chicken kota, 8 russian", TODAY, PRODUCTS, INGREDIENTS)
+    assert outcome.confirm_allowed
+    assert [record.item_name for record in outcome.records] == ["chicken kota", "russian kota"]
+    assert [record.quantity for record in outcome.records] == [Decimal("12"), Decimal("8")]
+
+
+SUMMARY = (
+    "Date: 2026-02-01 (Sunday) | Sold: 44 Classic Kotas, 34 Russian & Cheese, "
+    "24 Full House (Total: 102) | Used: 20.4 loaves bread (1.0 spoilage), 8.16kg polony, 71 russians"
+)
+
+
+def test_dated_sold_line_keeps_the_date_and_ignores_the_total():
+    outcome = extract_heuristic(SUMMARY, TODAY, [], [])
+    assert outcome.confirm_allowed
+    sales = [record for record in outcome.records if record.kind == "sale"]
+    assert [(record.item_name, record.quantity, record.record_date) for record in sales] == [
+        ("classic kota", Decimal("44"), date(2026, 2, 1)),
+        ("russian cheese kota", Decimal("34"), date(2026, 2, 1)),
+        ("full house kota", Decimal("24"), date(2026, 2, 1)),
+    ]
+    assert all(record.unit_price is None for record in sales)
+    assert "2026-02-01" in outcome.read_back
+    assert "102" not in outcome.read_back
+    assert "YES" in outcome.read_back
+    usage = {record.item_name: record.quantity for record in outcome.records if record.kind == "usage"}
+    assert usage == {
+        "bread loaf": Decimal("20.4"),
+        "polony": Decimal("8.16"),
+        "russian sausage": Decimal("71"),
+    }
+    waste = [record for record in outcome.records if record.kind == "waste"]
+    assert len(waste) == 1
+    assert waste[0].item_name == "bread loaf"
+    assert waste[0].quantity == Decimal("1.0")
+    assert waste[0].reason == "spoiled"
+    assert waste[0].record_date == date(2026, 2, 1)
+
+
 def test_yes_and_no_words():
     assert is_yes("YES")
     assert is_yes("ja")
