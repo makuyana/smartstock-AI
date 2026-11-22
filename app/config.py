@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     media_dir: str = "/data/media"
     scheduler_enabled: bool = True
     scheduler_secret: str = ""
+    bot_api_token: str = ""
     app_env: str = "production"
     log_level: str = "INFO"
     seed_demo: bool = False

@@ -76,6 +76,7 @@ Do not paste the key into the code or into a chat.
 | INSTAGRAM_TOKEN | Meta → **Instagram** → token for the shop's Instagram account |
 | INSTAGRAM_ACCOUNT_ID | Meta → **Instagram** → the Instagram account id |
 | LLM_API_KEY | Optional. Your xAI key for Grok. Blank is ok. The shop rules still work. Do not put the key in the code. On Render this box stays secret (`sync: false`). |
+| BOT_API_TOKEN | Optional. A long random secret for the trusted shop bots. Run `openssl rand -hex 32`. Leave it blank and the bot API stays off. Do not put the value in the code. On Render this box stays secret (`sync: false`). See `docs/bot-api.md`. |
 | LLM_BASE_URL | `https://api.x.ai/v1` for Grok. That address speaks the same chat API as OpenAI. |
 | LLM_MODEL | A Grok model, such as `grok-4`. |
 | DATABASE_URL | Leave this. Render fills it in. |
