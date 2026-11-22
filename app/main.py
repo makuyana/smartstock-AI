@@ -7,11 +7,13 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 
+from app.bot.guard import BotAuditMiddleware
+from app.bot.routes import router as bot_router
 from app.channels.meta import MetaClient
 from app.config import Settings, normalize_database_url
 from app.db import apply_migrations_retry, open_pool
-from app.llm.client import LLMClient
 from app.demo.routes import router as demo_router
+from app.llm.client import LLMClient
 from app.legal.routes import router as legal_router
 from app.webhook.routes import register
 
@@ -54,9 +56,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await app.state.http.aclose()
 
     app = FastAPI(title="SmartStock AI", lifespan=lifespan)
+    app.add_middleware(BotAuditMiddleware)
     register(app)
     app.include_router(demo_router)
     app.include_router(legal_router)
+    app.include_router(bot_router)
     return app
 
 
